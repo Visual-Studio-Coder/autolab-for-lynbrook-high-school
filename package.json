@@ -1,0 +1,178 @@
+{
+  "name": "autolab-for-lynbrook-high-school",
+  "displayName": "Autolab for Lynbrook High School",
+  "description": "This autolab extension, made for Lynbrook High School, allows for students to connect their Autolab accounts to this Visual Studio Code extension and download and submit assignments and view the scores/feedback without the need to open autolab in the browser, saving a significant amount of time and boosting productivity.",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Autolab",
+      "properties": {
+        "autolab.workspacePath": {
+          "type": "string",
+          "default": "~/Documents/Autolab",
+          "description": "Path to the folder where assignments will be downloaded."
+        },
+        "autolab.sessionCookie": {
+          "type": "string",
+          "default": "",
+          "description": "Your Autolab session cookie (e.g., _autolab_session=...)."
+        },
+        "autolab.authorName": {
+          "type": "string",
+          "default": "",
+          "description": "Your name for Java file headers."
+        },
+        "autolab.period": {
+          "type": "string",
+          "default": "",
+          "description": "Your class period."
+        },
+        "autolab.collaborators": {
+          "type": "string",
+          "default": "",
+          "description": "Collaborators to list in Java file headers."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "autolab-explorer",
+          "title": "Autolab",
+          "icon": "resources/autolab-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "autolab-explorer": [
+        {
+          "id": "autolabAssignments",
+          "name": "Assignments"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "autolab.refreshAssignments",
+        "title": "Refresh Assignments",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "autolab.searchAssignments",
+        "title": "Search Assignments",
+        "icon": "$(search)"
+      },
+      {
+        "command": "autolab.downloadAssignment",
+        "title": "Download Assignment",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "autolab.submitAssignment",
+        "title": "Submit Assignment",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "autolab.viewFeedback",
+        "title": "View Feedback",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "autolab.openWriteup",
+        "title": "Open Write-up",
+        "icon": "$(book)"
+      },
+      {
+        "command": "autolab.updateHeaders",
+        "title": "Update Java Headers",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "autolab.openAssignmentFolder",
+        "title": "Open Assignment",
+        "icon": "$(root-folder-opened)"
+      },
+      {
+        "command": "autolab.openRootFolder",
+        "title": "Open Autolab Folder",
+        "icon": "$(folder-opened)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "autolab.refreshAssignments",
+          "when": "view == autolabAssignments",
+          "group": "navigation"
+        },
+        {
+          "command": "autolab.searchAssignments",
+          "when": "view == autolabAssignments",
+          "group": "navigation"
+        },
+        {
+          "command": "autolab.openRootFolder",
+          "when": "view == autolabAssignments",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "autolab.downloadAssignment",
+          "when": "view == autolabAssignments && viewItem =~ /notDownloaded/",
+          "group": "inline"
+        },
+        {
+          "command": "autolab.submitAssignment",
+          "when": "view == autolabAssignments && viewItem =~ /downloaded/",
+          "group": "inline"
+        },
+        {
+          "command": "autolab.viewFeedback",
+          "when": "view == autolabAssignments && viewItem =~ /Graded/",
+          "group": "inline"
+        },
+        {
+          "command": "autolab.openWriteup",
+          "when": "view == autolabAssignments"
+        },
+        {
+          "command": "autolab.updateHeaders",
+          "when": "view == autolabAssignments && viewItem =~ /downloaded/"
+        },
+        {
+          "command": "autolab.openAssignmentFolder",
+          "when": "view == autolabAssignments && viewItem =~ /downloaded/"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "pretest": "npm run lint",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "@types/vscode": "^1.105.0",
+    "@vscode/test-cli": "^0.0.11",
+    "@vscode/test-electron": "^2.5.2",
+    "eslint": "^9.36.0"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "cheerio": "^1.1.2",
+    "form-data": "^4.0.5",
+    "node-fetch": "^2.7.0",
+    "unzipper": "^0.12.3"
+  }
+}
