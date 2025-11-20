@@ -3,13 +3,21 @@
   "displayName": "Autolab for Lynbrook High School",
   "description": "This autolab extension, made for Lynbrook High School, allows for students to connect their Autolab accounts to this Visual Studio Code extension and download and submit assignments and view the scores/feedback without the need to open autolab in the browser, saving a significant amount of time and boosting productivity.",
   "version": "0.0.1",
+  "publisher": "your-publisher-id",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/autolab-for-lynbrook-high-school"
+  },
   "engines": {
     "vscode": "^1.105.0"
   },
   "categories": [
+    "Education",
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onView:autolabAssignments"
+  ],
   "main": "./extension.js",
   "contributes": {
     "configuration": {

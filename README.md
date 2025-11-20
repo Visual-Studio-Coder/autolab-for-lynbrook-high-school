@@ -1,65 +1,55 @@
-# autolab-for-lynbrook-high-school README
+# Autolab for Lynbrook High School
 
-This is the README for your extension "autolab-for-lynbrook-high-school". After writing up a brief description, we recommend including the following sections.
+This VS Code extension allows Lynbrook High School students to manage their APCS-A Autolab assignments directly from VS Code.
 
 ## Features
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+*   **View Assignments**: See a list of all your assignments, due dates, and scores.
+*   **Download**: Download assignment starter code and automatically unzip it.
+*   **Submit**: Zip and submit your code directly to Autolab.
+*   **Feedback**: View autograder feedback and scores instantly within VS Code.
+*   **Java Headers**: Automatically update `@author` and `@version` tags in your Java files.
+*   **Search**: Quickly find assignments by name.
 
-For example if there is an image subfolder under your extension project workspace:
+## Setup
 
-\!\[feature X\]\(images/feature-x.png\)
+1.  Install the extension.
+2.  Open VS Code Settings (`Cmd+,`) and search for **Autolab**.
+3.  **Session Cookie**: You need to get your session cookie from your browser.
+    *   Log in to [Autolab](https://cs.lhs.fuhsd.org).
+    *   Open Developer Tools (F12 or Right Click -> Inspect).
+    *   Go to the **Application** tab (Chrome) or **Storage** tab (Firefox).
+    *   Expand **Cookies** and select `https://cs.lhs.fuhsd.org`.
+    *   Copy the value of `_autolab_session`.
+    *   Paste it into the **Autolab: Session Cookie** setting in VS Code.
+4.  **Workspace Path**: Set the folder where you want your assignments to be downloaded (default is `~/Documents/Autolab`).
+5.  **Personal Info**: Set your **Author Name** and **Period** for the Java file header updates.
 
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
+## Usage
+
+*   Click the **Autolab** icon in the Activity Bar (left side).
+*   Click the **Download** icon on an assignment to download it.
+*   Right-click a downloaded assignment to **Submit** or **Open** it.
+*   Use the **Search** icon to filter assignments.
 
 ## Requirements
 
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
+*   An account on the Lynbrook High School Autolab server.
+*   Enrolled in the APCS-A course.
 
 ## Extension Settings
 
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
-
-For example:
-
-This extension contributes the following settings:
-
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
+*   `autolab.sessionCookie`: Your Autolab session cookie.
+*   `autolab.workspacePath`: Directory to save assignments.
+*   `autolab.authorName`: Name to use in Java comments.
+*   `autolab.period`: Class period to use in Java comments.
 
 ## Known Issues
 
-Calling out known issues can help limit users opening duplicate issues against your extension.
+*   If your session cookie expires, you will need to update it in settings.
 
 ## Release Notes
 
-Users appreciate release notes as you update your extension.
+### 0.0.1
 
-### 1.0.0
-
-Initial release of ...
-
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
-
----
-
-## Working with Markdown
-
-You can author your README using Visual Studio Code.  Here are some useful editor keyboard shortcuts:
-
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux)
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux)
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets
-
-## For more information
-
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
-
-**Enjoy!**
+Initial release of Autolab for Lynbrook High School.
