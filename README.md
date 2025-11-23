@@ -22,7 +22,7 @@ This VS Code extension allows Lynbrook High School students to manage their APCS
     *   Expand **Cookies** and select `https://cs.lhs.fuhsd.org`.
     *   Copy the value of `_autolab_session`.
     *   Paste it into the **Autolab: Session Cookie** setting in VS Code.
-4.  **Workspace Path**: Set the folder where you want your assignments to be downloaded (default is `~/Documents/Autolab`).
+4.  **Workspace Path**: Set the folder where you want your assignments to be downloaded. You can type the path manually or click the **Select Folder...** link in the settings description.
 5.  **Personal Info**: Set your **Author Name** and **Period** for the Java file header updates.
 
 ## Usage
@@ -49,6 +49,14 @@ This VS Code extension allows Lynbrook High School students to manage their APCS
 *   If your session cookie expires, you will need to update it in settings.
 
 ## Release Notes
+
+### 0.0.4
+
+Added a folder picker in Settings for easier configuration.
+
+### 0.0.3
+
+Fixed sidebar icon visibility.
 
 ### 0.0.1
 

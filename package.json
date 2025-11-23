@@ -2,7 +2,7 @@
   "name": "autolab-for-lynbrook-high-school",
   "displayName": "Autolab for Lynbrook High School",
   "description": "This autolab extension, made for Lynbrook High School, allows for students to connect their Autolab accounts to this Visual Studio Code extension and download and submit assignments and view the scores/feedback without the need to open autolab in the browser, saving a significant amount of time and boosting productivity.",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "icon": "resources/extension-icon.png",
   "publisher": "Visual-Studio-Coder",
   "repository": {
@@ -27,7 +27,7 @@
         "autolab.workspacePath": {
           "type": "string",
           "default": "~/Documents/Autolab",
-          "description": "Path to the folder where assignments will be downloaded."
+          "markdownDescription": "Path to the folder where assignments will be downloaded. [Select Folder...](command:autolab.setDownloadFolder)"
         },
         "autolab.sessionCookie": {
           "type": "string",
@@ -113,6 +113,11 @@
         "command": "autolab.openRootFolder",
         "title": "Open Autolab Folder",
         "icon": "$(folder-opened)"
+      },
+      {
+        "command": "autolab.setDownloadFolder",
+        "title": "Set Download Folder",
+        "category": "Autolab"
       }
     ],
     "menus": {

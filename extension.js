@@ -178,6 +178,24 @@ function activate(context) {
 			}
 		})
 	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('autolab.setDownloadFolder', async () => {
+			const folderUri = await vscode.window.showOpenDialog({
+				canSelectFiles: false,
+				canSelectFolders: true,
+				canSelectMany: false,
+				openLabel: 'Select Download Folder'
+			});
+
+			if (folderUri && folderUri[0]) {
+				const config = vscode.workspace.getConfiguration('autolab');
+				await config.update('workspacePath', folderUri[0].fsPath, vscode.ConfigurationTarget.Global);
+				vscode.window.showInformationMessage(`Autolab download folder set to: ${folderUri[0].fsPath}`);
+				assignmentsProvider.refresh();
+			}
+		})
+	);
 }
 
 async function showFeedbackDocument(title, markdown) {
