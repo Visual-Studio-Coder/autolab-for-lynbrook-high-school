@@ -2,6 +2,15 @@
 
 All notable changes to the "autolab-for-lynbrook-high-school" extension will be documented in this file.
 
+## [0.0.6] - 2025-11-23
+
+- Fixed "Open Assignment" command to check if folder exists.
+- Improved error handling for missing assignment folders.
+
+## [0.0.5] - 2025-11-23
+
+- Fixed buttons (Download, Submit, etc.) not working due to command argument issues.
+
 ## [0.0.4] - 2025-11-23
 
 - Added a "Select Folder..." link in Settings to easily pick the download directory.

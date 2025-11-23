@@ -4,6 +4,7 @@ const vscode = require('vscode');
 const autolab = require('./autolab');
 const { AssignmentsProvider } = require('./assignmentsProvider');
 const path = require('path');
+const fs = require('fs');
 
 /**
  * @param {vscode.ExtensionContext} context
@@ -55,32 +56,30 @@ function activate(context) {
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('autolab.downloadAssignment', async (node) => {
-			// Handle both TreeItem (node) and direct assignment object (from search if we wanted to pass it directly, but here we reveal)
-			// Actually, the command is invoked on the TreeItem usually.
-			// If invoked from command palette without context, node is undefined.
-			let assignment = node ? node.assignment : null;
+			// Handle both TreeItem (node.assignment) and direct assignment object (node)
+			let assignment = node ? (node.assignment || node) : null;
 			
 			if (!assignment) return;
 			
 			try {
 				await vscode.window.withProgress({
 					location: vscode.ProgressLocation.Notification,
-					title: `Downloading ${node.assignment.name}...`,
+					title: `Downloading ${assignment.name}...`,
 					cancellable: false
 				}, async () => {
-					await autolab.downloadAssignment(node.assignment);
+					await autolab.downloadAssignment(assignment);
 				});
 				
-				vscode.window.showInformationMessage(`Downloaded ${node.assignment.name}`);
+				vscode.window.showInformationMessage(`Downloaded ${assignment.name}`);
 				assignmentsProvider.refresh();
 
 				const selection = await vscode.window.showInformationMessage(
-					`Downloaded ${node.assignment.name}. Would you like to open it?`,
+					`Downloaded ${assignment.name}. Would you like to open it?`,
 					'Yes', 'No'
 				);
 				if (selection === 'Yes') {
 					const prefs = autolab.getPreferences();
-					const destDir = path.join(prefs.workspacePath, node.assignment.name);
+					const destDir = path.join(prefs.workspacePath, assignment.name);
 					const uri = vscode.Uri.file(destDir);
 					vscode.commands.executeCommand('vscode.openFolder', uri, { forceNewWindow: false });
 				}
@@ -92,12 +91,18 @@ function activate(context) {
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('autolab.openAssignmentFolder', (node) => {
-			if (!node || !node.assignment) return;
+			let assignment = node ? (node.assignment || node) : null;
+			if (!assignment) return;
 			
 			const prefs = autolab.getPreferences();
-			const destDir = path.join(prefs.workspacePath, node.assignment.name);
-			const uri = vscode.Uri.file(destDir);
+			const destDir = path.join(prefs.workspacePath, assignment.name);
 			
+			if (!fs.existsSync(destDir)) {
+				vscode.window.showErrorMessage(`Assignment folder not found at: ${destDir}. Please download the assignment first.`);
+				return;
+			}
+
+			const uri = vscode.Uri.file(destDir);
 			vscode.commands.executeCommand('vscode.openFolder', uri, { forceNewWindow: false });
 		})
 	);
@@ -112,23 +117,24 @@ function activate(context) {
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('autolab.submitAssignment', async (node) => {
-			if (!node || !node.assignment) return;
+			let assignment = node ? (node.assignment || node) : null;
+			if (!assignment) return;
 
 			try {
 				await vscode.window.withProgress({
 					location: vscode.ProgressLocation.Notification,
-					title: `Submitting ${node.assignment.name}...`,
+					title: `Submitting ${assignment.name}...`,
 					cancellable: false
 				}, async (progress) => {
 					progress.report({ message: "Zipping and uploading..." });
-					await autolab.submitAssignment(node.assignment);
+					await autolab.submitAssignment(assignment);
 					
 					progress.report({ message: "Waiting for grading..." });
-					const feedback = await autolab.pollFeedback(node.assignment.name, (msg) => {
+					const feedback = await autolab.pollFeedback(assignment.name, (msg) => {
 						progress.report({ message: msg });
 					});
 					
-					showFeedbackDocument(node.assignment.name, feedback);
+					showFeedbackDocument(assignment.name, feedback);
 				});
 			} catch (error) {
 				vscode.window.showErrorMessage(`Submission failed: ${error.message}`);
@@ -138,16 +144,17 @@ function activate(context) {
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('autolab.viewFeedback', async (node) => {
-			if (!node || !node.assignment) return;
+			let assignment = node ? (node.assignment || node) : null;
+			if (!assignment) return;
 			
 			try {
 				await vscode.window.withProgress({
 					location: vscode.ProgressLocation.Notification,
-					title: `Fetching feedback for ${node.assignment.name}...`,
+					title: `Fetching feedback for ${assignment.name}...`,
 					cancellable: false
 				}, async () => {
-					const feedback = await autolab.pollFeedback(node.assignment.name);
-					showFeedbackDocument(node.assignment.name, feedback);
+					const feedback = await autolab.pollFeedback(assignment.name);
+					showFeedbackDocument(assignment.name, feedback);
 				});
 			} catch (error) {
 				vscode.window.showErrorMessage(`Failed to get feedback: ${error.message}`);
@@ -157,18 +164,20 @@ function activate(context) {
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('autolab.openWriteup', (node) => {
-			if (node && node.assignment && node.assignment.writeupUrl) {
-				vscode.env.openExternal(vscode.Uri.parse(node.assignment.writeupUrl));
+			let assignment = node ? (node.assignment || node) : null;
+			if (assignment && assignment.writeupUrl) {
+				vscode.env.openExternal(vscode.Uri.parse(assignment.writeupUrl));
 			}
 		})
 	);
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('autolab.updateHeaders', (node) => {
-			if (!node || !node.assignment) return;
+			let assignment = node ? (node.assignment || node) : null;
+			if (!assignment) return;
 			
 			const prefs = autolab.getPreferences();
-			const folderPath = path.join(prefs.workspacePath, node.assignment.name);
+			const folderPath = path.join(prefs.workspacePath, assignment.name);
 			
 			try {
 				autolab.updateJavaFileHeaders(folderPath, prefs);
