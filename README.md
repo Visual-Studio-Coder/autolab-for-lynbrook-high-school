@@ -50,6 +50,10 @@ This VS Code extension allows Lynbrook High School students to manage their APCS
 
 ## Release Notes
 
+### 0.0.7
+
+Improved download reliability (dynamic link scraping), added automatic folder flattening, and enhanced Java header updates.
+
 ### 0.0.6
 
 Fixed issues with opening assignment folders and button responsiveness.

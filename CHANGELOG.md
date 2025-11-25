@@ -2,6 +2,12 @@
 
 All notable changes to the "autolab-for-lynbrook-high-school" extension will be documented in this file.
 
+## [0.0.7] - 2025-11-24
+
+- **Dynamic Download Links**: Now scrapes the assessment page to find the correct download link, fixing 404 errors.
+- **Folder Flattening**: Automatically detects and fixes nested folders (e.g., `Lab1/Lab1`) after downloading.
+- **Improved Java Headers**: Better detection and replacement of TODOs in Java files (case-insensitive, handles multiple spaces).
+
 ## [0.0.6] - 2025-11-23
 
 - Fixed "Open Assignment" command to check if folder exists.
