@@ -50,42 +50,24 @@ function updateJavaFileHeaders(folderPath, prefs) {
             let content = fs.readFileSync(fullPath, "utf-8");
             let modified = false;
 
-            if (prefs.authorName && content.includes("TODO Your Name")) {
-                content = content.replace(/TODO Your Name/g, prefs.authorName);
-                modified = true;
-            }
-
-            if (content.includes("TODO Date")) {
-                const dateStr = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
-                content = content.replace(/TODO Date/g, dateStr);
-                modified = true;
-            }
-
-            if (prefs.period && content.includes("TODO Your Period")) {
-                content = content.replace(/TODO Your Period/g, prefs.period);
-                modified = true;
-            }
-
-            const collaborators = prefs.collaborators || "Me, myself, and I";
-            if (content.includes("TODO list collaborators")) {
-                content = content.replace(/TODO list collaborators/g, collaborators);
-                modified = true;
-            }
-
-            // Regex replacements
+            // Regex replacements for flexibility
             if (prefs.authorName && /TODO\s+Your\s+Name/i.test(content)) {
                 content = content.replace(/TODO\s+Your\s+Name/gi, prefs.authorName);
                 modified = true;
             }
+            
             if (/TODO\s+Date/i.test(content)) {
                 const dateStr = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
                 content = content.replace(/TODO\s+Date/gi, dateStr);
                 modified = true;
             }
+            
             if (prefs.period && /TODO\s+Your\s+Period/i.test(content)) {
                 content = content.replace(/TODO\s+Your\s+Period/gi, prefs.period);
                 modified = true;
             }
+            
+            const collaborators = prefs.collaborators || "Me, myself, and I";
             if (/TODO\s+list\s+collaborators/i.test(content)) {
                 content = content.replace(/TODO\s+list\s+collaborators/gi, collaborators);
                 modified = true;
@@ -195,10 +177,41 @@ async function downloadAssignment(assignment) {
         fs.mkdirSync(prefs.workspacePath, { recursive: true });
     }
 
+    // 1. Fetch the assessment page first to find the real download link
+    const assessmentUrl = `${AUTOLAB_URL}/courses/APCS-A-25/assessments/${assignment.name}`;
+    const pageResponse = await fetch(assessmentUrl, {
+        headers: {
+            Cookie: prefs.sessionCookie,
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
+        },
+    });
+
+    if (!pageResponse.ok) {
+        throw new Error(`Failed to fetch assessment page: ${pageResponse.status}`);
+    }
+
+    const pageBody = await pageResponse.text();
+    const $ = cheerio.load(pageBody);
+
+    let downloadLink = "";
+    $("a").each((i, el) => {
+        const text = $(el).text().trim();
+        if (text.includes("Download handout")) {
+            downloadLink = $(el).attr("href") || "";
+        }
+    });
+
+    if (!downloadLink) {
+        // Fallback to the standard pattern if scraping fails
+        downloadLink = `/courses/APCS-A-25/assessments/${assignment.name}/handout`;
+    }
+
+    const fullDownloadUrl = `${AUTOLAB_URL}${downloadLink}`;
+
     // Note: This basic auth credential appears to be public/shared for the school's Autolab instance.
     // If this is private, it should be moved to configuration.
     const auth = "Basic " + Buffer.from("lhsuser:lhsuser").toString("base64");
-    const response = await fetch(assignment.downloadUrl, {
+    const response = await fetch(fullDownloadUrl, {
         headers: {
             Authorization: auth,
             Cookie: prefs.sessionCookie,
@@ -222,6 +235,22 @@ async function downloadAssignment(assignment) {
     });
 
     fs.unlinkSync(zipFilePath);
+
+    // Check for nested folder with same name (e.g. Lab1/Lab1)
+    const nestedDir = path.join(destDir, assignment.name);
+    if (fs.existsSync(nestedDir) && fs.statSync(nestedDir).isDirectory()) {
+        console.log(`Detected nested folder ${nestedDir}, flattening...`);
+        const files = fs.readdirSync(nestedDir);
+        for (const file of files) {
+            const srcPath = path.join(nestedDir, file);
+            const destPath = path.join(destDir, file);
+            // Move file up one level
+            fs.renameSync(srcPath, destPath);
+        }
+        // Remove the now empty nested directory
+        fs.rmdirSync(nestedDir);
+    }
+
     updateJavaFileHeaders(destDir, prefs);
     
     // Open the folder in VS Code
