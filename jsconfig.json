@@ -1,8 +1,11 @@
 {
 	"compilerOptions": {
-		"module": "Node16",
+		"module": "CommonJS",
+		"moduleResolution": "Node",
 		"target": "ES2022",
 		"checkJs": true,  /* Typecheck .js files. */
+		"maxNodeModuleJsDepth": 0,
+		"skipLibCheck": true,
 		"lib": [
 			"ES2022"
 		]

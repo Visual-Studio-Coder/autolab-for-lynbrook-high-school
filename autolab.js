@@ -4,391 +4,789 @@ const cheerio = require('cheerio');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { pipeline } = require('stream');
+const { pipeline, Transform } = require('stream');
 const { promisify } = require('util');
 const unzipper = require('unzipper');
 const FormData = require('form-data');
 const archiver = require('archiver');
+const {
+    cleanScore,
+    getAssignmentFolderName,
+    getErrorMessage,
+    getPortableArchiveSegments,
+    normalizeSessionCookie,
+    resolveAutolabUrl,
+    toPortableName,
+} = require('./autolabUtils');
 
 const streamPipeline = promisify(pipeline);
+const AUTOLAB_URL = 'https://cs.lhs.fuhsd.org';
+const SESSION_SECRET_KEY = 'autolab.sessionCookie';
+const REQUEST_TIMEOUT_MS = 30_000;
+const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
+const MAX_ARCHIVE_FILES = 5_000;
+const MAX_EXTRACTED_BYTES = 250 * 1024 * 1024;
+const HANDOUT_AUTHORIZATION = `Basic ${Buffer.from('lhsuser:lhsuser').toString('base64')}`;
 
-const AUTOLAB_URL = "https://cs.lhs.fuhsd.org";
-const COURSE_URL = `${AUTOLAB_URL}/courses/APCS-A-25/assessments`;
+/** @type {vscode.SecretStorage | undefined} */
+let secretStorage;
+
+/** @param {vscode.SecretStorage} storage */
+function initialize(storage) {
+    secretStorage = storage;
+}
+
+function getDefaultUserAgent() {
+    const chromeVersion = process.versions.chrome || '142.0.0.0';
+    let platform = 'X11; Linux x86_64';
+    if (process.platform === 'win32') {
+        platform = 'Windows NT 10.0; Win64; x64';
+    } else if (process.platform === 'darwin') {
+        platform = 'Macintosh; Intel Mac OS X 10_15_7';
+    }
+    return `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`;
+}
 
 function getPreferences() {
     const config = vscode.workspace.getConfiguration('autolab');
-    let workspacePath = config.get('workspacePath');
-    if (workspacePath.startsWith('~')) {
-        workspacePath = path.join(os.homedir(), workspacePath.slice(1));
+    let workspacePath = String(config.get('workspacePath') || '~/Documents/Autolab').trim();
+    if (/^~(?:[\\/]|$)/.test(workspacePath)) {
+        workspacePath = path.join(os.homedir(), workspacePath.slice(1).replace(/^[\\/]/, ''));
     }
+
+    const courseName = String(config.get('courseName') || 'APCS-A-25').trim();
+    if (!courseName || /[\\/]/.test(courseName)) {
+        throw new Error('Autolab course name is invalid.');
+    }
+
     return {
-        workspacePath,
-        sessionCookie: config.get('sessionCookie'),
-        authorName: config.get('authorName'),
-        period: config.get('period'),
-        collaborators: config.get('collaborators')
+        workspacePath: path.resolve(workspacePath),
+        courseName,
+        authorName: String(config.get('authorName') || '').trim(),
+        period: String(config.get('period') || '').trim(),
+        collaborators: String(config.get('collaborators') || '').trim(),
+        userAgent: String(config.get('userAgent') || '').trim() || getDefaultUserAgent(),
     };
 }
 
-function updateJavaFileHeaders(folderPath, prefs) {
-    console.log(`Scanning folder for Java headers: ${folderPath}`);
-    if (!fs.existsSync(folderPath)) {
-        console.log(`Folder does not exist: ${folderPath}`);
-        return;
+async function getSessionCookie() {
+    const secureValue = await secretStorage?.get(SESSION_SECRET_KEY);
+    const legacyValue = vscode.workspace.getConfiguration('autolab').get('sessionCookie');
+    const value = secureValue || legacyValue;
+    if (!value) {
+        throw new Error('Session cookie is not set. Run "Autolab: Set Session Cookie".');
+    }
+    return normalizeSessionCookie(value);
+}
+
+/** @param {string} value */
+async function setSessionCookie(value) {
+    if (!secretStorage) {
+        throw new Error('Secure storage is not available.');
+    }
+    const normalized = normalizeSessionCookie(value);
+    await secretStorage.store(SESSION_SECRET_KEY, normalized);
+    await vscode.workspace.getConfiguration('autolab').update(
+        'sessionCookie',
+        undefined,
+        vscode.ConfigurationTarget.Global
+    );
+}
+
+async function clearSessionCookie() {
+    await secretStorage?.delete(SESSION_SECRET_KEY);
+    await vscode.workspace.getConfiguration('autolab').update(
+        'sessionCookie',
+        undefined,
+        vscode.ConfigurationTarget.Global
+    );
+}
+
+/** @param {ReturnType<typeof getPreferences>} prefs */
+function getCourseUrl(prefs) {
+    return `${AUTOLAB_URL}/courses/${encodeURIComponent(prefs.courseName)}`;
+}
+
+/**
+ * @param {ReturnType<typeof getPreferences>} prefs
+ * @param {{ name: string, assessmentUrl?: string }} assignment
+ */
+function getAssessmentUrl(prefs, assignment) {
+    if (assignment.assessmentUrl) {
+        return resolveAutolabUrl(assignment.assessmentUrl, AUTOLAB_URL);
+    }
+    return `${getCourseUrl(prefs)}/assessments/${encodeURIComponent(assignment.name)}`;
+}
+
+/**
+ * Return the portable path, or an existing legacy path on macOS or Linux.
+ *
+ * @param {ReturnType<typeof getPreferences>} prefs
+ * @param {{ name: string, folderName?: string }} assignment
+ */
+function getAssignmentDirectory(prefs, assignment) {
+    const safePath = path.join(prefs.workspacePath, getAssignmentFolderName(assignment));
+    if (fs.existsSync(safePath)) {
+        return safePath;
     }
 
-    const files = fs.readdirSync(folderPath);
+    const legacyPath = path.resolve(prefs.workspacePath, assignment.name);
+    if (path.dirname(legacyPath) === prefs.workspacePath && fs.existsSync(legacyPath)) {
+        return legacyPath;
+    }
+    return safePath;
+}
 
-    for (const file of files) {
-        const fullPath = path.join(folderPath, file);
-        const stat = fs.statSync(fullPath);
-
-        if (stat.isDirectory()) {
-            updateJavaFileHeaders(fullPath, prefs);
-        } else if (file.endsWith(".java")) {
-            console.log(`Checking Java file: ${file}`);
-            let content = fs.readFileSync(fullPath, "utf-8");
-            let modified = false;
-
-            // Regex replacements for flexibility
-            if (prefs.authorName && /TODO\s+Your\s+Name/i.test(content)) {
-                content = content.replace(/TODO\s+Your\s+Name/gi, prefs.authorName);
-                modified = true;
-            }
-            
-            if (/TODO\s+Date/i.test(content)) {
-                const dateStr = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
-                content = content.replace(/TODO\s+Date/gi, dateStr);
-                modified = true;
-            }
-            
-            if (prefs.period && /TODO\s+Your\s+Period/i.test(content)) {
-                content = content.replace(/TODO\s+Your\s+Period/gi, prefs.period);
-                modified = true;
-            }
-            
-            const collaborators = prefs.collaborators || "Me, myself, and I";
-            if (/TODO\s+list\s+collaborators/i.test(content)) {
-                content = content.replace(/TODO\s+list\s+collaborators/gi, collaborators);
-                modified = true;
-            }
-
-            if (modified) {
-                console.log(`Writing modified content to ${file}`);
-                fs.writeFileSync(fullPath, content, "utf-8");
-            }
-        }
+/** @param {vscode.CancellationToken | undefined} token */
+function throwIfCancelled(token) {
+    if (token?.isCancellationRequested) {
+        throw new vscode.CancellationError();
     }
 }
 
-async function fetchAssignments() {
-    const prefs = getPreferences();
-    if (!prefs.sessionCookie) {
-        throw new Error("Session cookie not set. Please configure it in settings.");
+/**
+ * Keep the request timeout active until its response body is consumed.
+ *
+ * @template T
+ * @param {string} url
+ * @param {import('node-fetch').RequestInit} options
+ * @param {vscode.CancellationToken | undefined} token
+ * @param {(response: import('node-fetch').Response) => Promise<T>} consume
+ * @returns {Promise<T>}
+ */
+async function withFetch(url, options, token, consume) {
+    throwIfCancelled(token);
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+    }, REQUEST_TIMEOUT_MS);
+    const cancellation = token?.onCancellationRequested(() => controller.abort());
+
+    try {
+        const response = await fetch(url, { ...options, signal: controller.signal });
+        return await consume(response);
+    } catch (error) {
+        if (token?.isCancellationRequested) {
+            throw new vscode.CancellationError();
+        }
+        if (timedOut) {
+            throw new Error('The Autolab request timed out.');
+        }
+        throw error;
+    } finally {
+        clearTimeout(timeout);
+        cancellation?.dispose();
     }
+}
 
-    const response = await fetch(COURSE_URL, {
-        headers: {
-            Cookie: prefs.sessionCookie,
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
-        },
-    });
-
+/**
+ * @param {import('node-fetch').Response} response
+ * @param {string} action
+ */
+function assertResponseStatus(response, action) {
+    const responsePath = new URL(response.url).pathname;
+    if (response.redirected && /(?:sign[_-]?in|login)/i.test(responsePath)) {
+        throw new Error('Autolab rejected the session cookie. Set a new cookie and try again.');
+    }
     if (!response.ok) {
-        throw new Error(`Failed to fetch assignments (status: ${response.status})`);
+        throw new Error(`${action} failed with HTTP ${response.status}.`);
+    }
+}
+
+/** @param {ReturnType<typeof cheerio.load>} $ */
+function isLoginPage($) {
+    return $('input[type="password"]').length > 0 && $('form').filter((index, form) => {
+        return /(?:sign[_-]?in|login|session)/i.test($(form).attr('action') || '');
+    }).length > 0;
+}
+
+/**
+ * @param {string} url
+ * @param {import('node-fetch').RequestInit} options
+ * @param {vscode.CancellationToken | undefined} token
+ * @param {string} action
+ */
+async function fetchText(url, options, token, action) {
+    return withFetch(url, options, token, async (response) => {
+        assertResponseStatus(response, action);
+        const body = await response.text();
+        const $ = cheerio.load(body);
+        if (isLoginPage($)) {
+            throw new Error('Autolab rejected the session cookie. Set a new cookie and try again.');
+        }
+        return { body, $, responseUrl: response.url };
+    });
+}
+
+/**
+ * @param {ReturnType<typeof getPreferences>} prefs
+ * @param {string} cookie
+ * @param {Record<string, string>} [extra]
+ */
+function getHeaders(prefs, cookie, extra = {}) {
+    return {
+        Accept: 'text/html',
+        Cookie: cookie,
+        'User-Agent': prefs.userAgent,
+        ...extra,
+    };
+}
+
+/**
+ * @param {string} folderPath
+ * @param {{ authorName?: string, period?: string, collaborators?: string }} prefs
+ * @returns {number}
+ */
+function updateJavaFileHeaders(folderPath, prefs) {
+    if (!fs.existsSync(folderPath)) {
+        throw new Error(`Assignment folder does not exist: ${folderPath}`);
     }
 
-    const body = await response.text();
-    const $ = cheerio.load(body);
-    const scrapedAssignments = [];
-
-    const labsCollection = $(".collection.red.darken-4.date");
-    labsCollection.find("a.collection-item").each((index, item) => {
-        const $item = $(item);
-        const href = $item.attr("href");
-        const span = $item.find("span.new.badge");
-        const p = $item.find("p.date");
-
-        const name = $item.contents().filter((i, el) => el.type === "text").first().text().trim();
-        const dueDate = p.text().trim();
-
-        let writeupUrl = href;
-        if (span.length > 0 && span.attr("data-url")) {
-            writeupUrl = span.attr("data-url") || href;
+    let changedFiles = 0;
+    for (const entry of fs.readdirSync(folderPath, { withFileTypes: true })) {
+        const fullPath = path.join(folderPath, entry.name);
+        if (entry.isDirectory() && !entry.isSymbolicLink()) {
+            changedFiles += updateJavaFileHeaders(fullPath, prefs);
+            continue;
+        }
+        if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.java')) {
+            continue;
         }
 
-        if (name && href) {
-            const dueMatch = dueDate.match(/Due:\s*(.+)/);
-            const cleanDueDate = dueMatch ? dueMatch[1] : dueDate;
-            scrapedAssignments.push({
+        let content = fs.readFileSync(fullPath, 'utf8');
+        const original = content;
+        if (prefs.authorName) {
+            content = content.replace(/TODO\s+Your\s+Name/gi, prefs.authorName);
+        }
+        content = content.replace(
+            /TODO\s+Date/gi,
+            new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+        );
+        if (prefs.period) {
+            content = content.replace(/TODO\s+Your\s+Period/gi, prefs.period);
+        }
+        if (prefs.collaborators) {
+            content = content.replace(/TODO\s+list\s+collaborators/gi, prefs.collaborators);
+        }
+
+        if (content !== original) {
+            fs.writeFileSync(fullPath, content, 'utf8');
+            changedFiles++;
+        }
+    }
+    return changedFiles;
+}
+
+/** @param {vscode.CancellationToken} [token] */
+async function fetchAssignments(token) {
+    const prefs = getPreferences();
+    const cookie = await getSessionCookie();
+    const courseUrl = getCourseUrl(prefs);
+    const assessmentsUrl = `${courseUrl}/assessments`;
+    const { $ } = await fetchText(
+        assessmentsUrl,
+        { headers: getHeaders(prefs, cookie) },
+        token,
+        'Fetching assignments'
+    );
+
+    let items = $('.collection.red.darken-4.date a.collection-item');
+    if (items.length === 0) {
+        items = $('a.collection-item[href*="/assessments/"]');
+    }
+
+    const assignments = [];
+    items.each((index, item) => {
+        const $item = $(item);
+        const href = $item.attr('href');
+        if (!href) {
+            return;
+        }
+
+        const directText = $item.contents()
+            .filter((textIndex, element) => element.type === 'text')
+            .map((textIndex, element) => $(element).text())
+            .get()
+            .join(' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+        const fallbackName = decodeURIComponent(new URL(href, AUTOLAB_URL).pathname.split('/').filter(Boolean).pop() || '');
+        const name = directText || fallbackName;
+        if (!name) {
+            return;
+        }
+
+        const dueText = $item.find('p.date').text().trim();
+        const dueMatch = dueText.match(/Due:\s*(.+)/i);
+        const badgeUrl = $item.find('span.new.badge[data-url]').attr('data-url');
+
+        try {
+            assignments.push({
                 name,
-                dueDate: cleanDueDate,
-                writeupUrl: `${AUTOLAB_URL}${writeupUrl}`,
-                downloadUrl: `${AUTOLAB_URL}/apcssnarf/${name}.zip`,
-                score: "",
+                folderName: getAssignmentFolderName({ name }),
+                dueDate: dueMatch ? dueMatch[1] : dueText,
+                assessmentUrl: resolveAutolabUrl(href, AUTOLAB_URL),
+                writeupUrl: resolveAutolabUrl(badgeUrl || href, AUTOLAB_URL, false),
+                score: 'No grade',
                 isDownloaded: false,
             });
+        } catch (error) {
+            console.warn(`Skipped an invalid assignment link: ${getErrorMessage(error)}`);
         }
     });
 
-    // Fetch grades
-    // Using a dummy ID (100) as the server seems to ignore it for the student gradebook view
-    const gradebookUrl = `${AUTOLAB_URL}/courses/APCS-A-25/course_user_data/100/gradebook/student`;
-    const gradeResponse = await fetch(gradebookUrl, {
-        headers: {
-            Cookie: prefs.sessionCookie,
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
+    for (const assignment of assignments) {
+        assignment.isDownloaded = fs.existsSync(getAssignmentDirectory(prefs, assignment));
+    }
+
+    const gradebookHref = $('a[href*="/gradebook/student"]').first().attr('href');
+    if (gradebookHref) {
+        try {
+            const gradebookUrl = resolveAutolabUrl(gradebookHref, AUTOLAB_URL);
+            const { $: $grade } = await fetchText(
+                gradebookUrl,
+                { headers: getHeaders(prefs, cookie) },
+                token,
+                'Fetching grades'
+            );
+            const gradeMap = new Map();
+            $grade('.category table.grades tr').each((index, row) => {
+                const cells = $grade(row).find('td');
+                if (cells.length < 4) {
+                    return;
+                }
+                const name = $grade(cells[0]).find('a').text().trim();
+                const scoreCell = $grade(cells[3]);
+                let score = '';
+                if (scoreCell.find('i').length > 0) {
+                    score = 'Grading in progress';
+                } else if (scoreCell.find('.not-yet-submitted').length === 0) {
+                    score = cleanScore(scoreCell.text().trim());
+                }
+                if (name && score) {
+                    gradeMap.set(name, score);
+                }
+            });
+            for (const assignment of assignments) {
+                assignment.score = gradeMap.get(assignment.name) || 'No grade';
+            }
+        } catch (error) {
+            if (error instanceof vscode.CancellationError) {
+                throw error;
+            }
+            console.warn(`Could not fetch Autolab grades: ${getErrorMessage(error)}`);
+        }
+    }
+
+    assignments.reverse();
+    return assignments;
+}
+
+/**
+ * @param {number} maximum
+ * @param {{ bytes: number }} counter
+ */
+function createSizeLimiter(maximum, counter, token) {
+    return new Transform({
+        transform(chunk, encoding, callback) {
+            if (token?.isCancellationRequested) {
+                callback(new vscode.CancellationError());
+                return;
+            }
+            counter.bytes += chunk.length;
+            if (counter.bytes > maximum) {
+                callback(new Error('The Autolab archive is larger than the allowed limit.'));
+                return;
+            }
+            callback(null, chunk);
         },
     });
+}
 
-    if (gradeResponse.ok) {
-        const gradeBody = await gradeResponse.text();
-        const $grade = cheerio.load(gradeBody);
-        const gradeMap = {};
-        $grade(".category table.grades tr").each((i, row) => {
-            const tds = $grade(row).find("td");
-            if (tds.length >= 4) {
-                const name = $grade(tds[0]).find("a").text().trim();
-                const scoreCell = $grade(tds[3]);
-                let score = "";
-                if (scoreCell.find("i").length > 0) {
-                    score = "Grading in progress";
-                } else if (scoreCell.find(".not-yet-submitted").length > 0) {
-                    score = "";
-                } else {
-                    score = scoreCell.text().trim().replace(/\.0/g, "");
-                }
-                if (name && score) gradeMap[name] = score;
+/**
+ * @param {string} zipPath
+ * @param {string} destination
+ * @param {vscode.CancellationToken | undefined} token
+ */
+async function extractZipSafely(zipPath, destination, token) {
+    const archive = await unzipper.Open.file(zipPath);
+    if (archive.files.length > MAX_ARCHIVE_FILES) {
+        throw new Error('The Autolab archive has too many files.');
+    }
+
+    const declaredSize = archive.files.reduce((total, file) => {
+        const size = Number(file.uncompressedSize || 0);
+        return total + (Number.isSafeInteger(size) && size > 0 ? size : 0);
+    }, 0);
+    if (declaredSize > MAX_EXTRACTED_BYTES) {
+        throw new Error('The extracted Autolab archive is larger than the allowed limit.');
+    }
+
+    const seenPaths = new Map();
+    const extracted = { bytes: 0 };
+    await fs.promises.mkdir(destination, { recursive: true });
+
+    for (const entry of archive.files) {
+        throwIfCancelled(token);
+        const segments = getPortableArchiveSegments(entry.path);
+        if (segments.length === 0) {
+            continue;
+        }
+        const target = path.join(destination, ...segments);
+        const relative = path.relative(destination, target);
+        if (relative.startsWith('..') || path.isAbsolute(relative)) {
+            throw new Error(`Unsafe archive path: ${entry.path}`);
+        }
+
+        const collisionKey = segments.join('/').toLowerCase();
+        const existingPath = seenPaths.get(collisionKey);
+        if (existingPath && existingPath !== segments.join('/')) {
+            throw new Error(`The archive has file names that differ only by letter case: ${entry.path}`);
+        }
+        seenPaths.set(collisionKey, segments.join('/'));
+
+        const unixMode = entry.versionMadeBy >> 8 === 3 ? entry.externalFileAttributes >>> 16 : 0;
+        if ((unixMode & 0o170000) === 0o120000) {
+            throw new Error(`The archive contains a symbolic link: ${entry.path}`);
+        }
+
+        if (entry.type === 'Directory') {
+            await fs.promises.mkdir(target, { recursive: true });
+            continue;
+        }
+        if (entry.type !== 'File') {
+            throw new Error(`Unsupported archive entry: ${entry.path}`);
+        }
+
+        if (existingPath) {
+            throw new Error(`The archive contains duplicate file names: ${entry.path}`);
+        }
+        await fs.promises.mkdir(path.dirname(target), { recursive: true });
+        await streamPipeline(
+            entry.stream(),
+            createSizeLimiter(MAX_EXTRACTED_BYTES, extracted, token),
+            fs.createWriteStream(target, { flags: 'wx' })
+        );
+    }
+}
+
+/**
+ * @param {string} extractedPath
+ * @param {{ name: string, folderName?: string }} assignment
+ */
+async function findExtractedRoot(extractedPath, assignment) {
+    const entries = await fs.promises.readdir(extractedPath, { withFileTypes: true });
+    if (entries.length !== 1 || !entries[0].isDirectory()) {
+        return extractedPath;
+    }
+
+    const possibleRootNames = new Set([
+        getAssignmentFolderName(assignment),
+        toPortableName(assignment.name, { maxLength: 120, preserveExtension: true }),
+    ]);
+    return possibleRootNames.has(entries[0].name)
+        ? path.join(extractedPath, entries[0].name)
+        : extractedPath;
+}
+
+/** @param {string} temporaryRoot */
+async function removeTemporaryDirectory(temporaryRoot) {
+    try {
+        await fs.promises.rm(temporaryRoot, {
+            recursive: true,
+            force: true,
+            maxRetries: 3,
+            retryDelay: 100,
+        });
+    } catch (error) {
+        console.warn(`Could not remove temporary Autolab files: ${getErrorMessage(error)}`);
+    }
+}
+
+/**
+ * @param {{ name: string, folderName?: string, assessmentUrl?: string }} assignment
+ * @param {vscode.CancellationToken} [token]
+ */
+async function downloadAssignment(assignment, token) {
+    const prefs = getPreferences();
+    const cookie = await getSessionCookie();
+    await fs.promises.mkdir(prefs.workspacePath, { recursive: true });
+
+    const destination = getAssignmentDirectory(prefs, assignment);
+    if (fs.existsSync(destination)) {
+        throw new Error(`Assignment folder already exists: ${destination}`);
+    }
+
+    const assessmentUrl = getAssessmentUrl(prefs, assignment);
+    const { $ } = await fetchText(
+        assessmentUrl,
+        { headers: getHeaders(prefs, cookie) },
+        token,
+        'Fetching the assessment page'
+    );
+
+    let downloadLink = '';
+    $('a').each((index, element) => {
+        const href = $(element).attr('href') || '';
+        if (!downloadLink && (/download handout/i.test($(element).text()) || /\/handout(?:[?#]|$)/i.test(href))) {
+            downloadLink = href;
+        }
+    });
+    if (!downloadLink) {
+        downloadLink = `${assessmentUrl.replace(/\/$/, '')}/handout`;
+    }
+    const downloadUrl = resolveAutolabUrl(downloadLink, AUTOLAB_URL);
+
+    const temporaryRoot = await fs.promises.mkdtemp(path.join(prefs.workspacePath, '.autolab-download-'));
+    const zipPath = path.join(temporaryRoot, 'handout.zip');
+    const extractedPath = path.join(temporaryRoot, 'extracted');
+
+    try {
+        await withFetch(downloadUrl, {
+            headers: getHeaders(prefs, cookie, { Authorization: HANDOUT_AUTHORIZATION }),
+        }, token, async (response) => {
+            assertResponseStatus(response, 'Downloading the handout');
+            const contentLength = Number(response.headers.get('content-length') || 0);
+            if (contentLength > MAX_DOWNLOAD_BYTES) {
+                throw new Error('The Autolab handout is larger than the allowed limit.');
+            }
+            if (!response.body) {
+                throw new Error('Autolab returned an empty handout.');
+            }
+            const contentType = response.headers.get('content-type') || '';
+            if (/text\/html/i.test(contentType)) {
+                throw new Error('Autolab returned an HTML page instead of a ZIP handout. Check the session cookie.');
+            }
+            await streamPipeline(
+                response.body,
+                createSizeLimiter(MAX_DOWNLOAD_BYTES, { bytes: 0 }, token),
+                fs.createWriteStream(zipPath, { flags: 'wx' })
+            );
+        });
+
+        await extractZipSafely(zipPath, extractedPath, token);
+        const extractedRoot = await findExtractedRoot(extractedPath, assignment);
+        updateJavaFileHeaders(extractedRoot, prefs);
+        throwIfCancelled(token);
+
+        if (fs.existsSync(destination)) {
+            throw new Error(`Assignment folder was created during the download: ${destination}`);
+        }
+        await fs.promises.rename(extractedRoot, destination);
+        return destination;
+    } finally {
+        await removeTemporaryDirectory(temporaryRoot);
+    }
+}
+
+/**
+ * @param {string} folderPath
+ * @param {string} zipPath
+ * @param {string} rootName
+ * @param {vscode.CancellationToken | undefined} token
+ */
+async function createSubmissionArchive(folderPath, zipPath, rootName, token) {
+    await new Promise((resolve, reject) => {
+        const output = fs.createWriteStream(zipPath, { flags: 'wx' });
+        const archive = archiver('zip', { zlib: { level: 9 } });
+        let settled = false;
+        const finish = (error) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            cancellation?.dispose();
+            if (error) {
+                reject(error);
+            } else {
+                resolve();
+            }
+        };
+        const cancellation = token?.onCancellationRequested(() => {
+            archive.abort();
+            finish(new vscode.CancellationError());
+        });
+
+        output.once('close', () => finish());
+        output.once('error', finish);
+        archive.once('error', finish);
+        archive.on('warning', (error) => {
+            if (error.code !== 'ENOENT') {
+                finish(error);
             }
         });
-        scrapedAssignments.forEach((assignment) => {
-            assignment.score = gradeMap[assignment.name] || "No grade";
-            assignment.isDownloaded = fs.existsSync(path.join(prefs.workspacePath, assignment.name));
-        });
-    }
-
-    scrapedAssignments.reverse();
-    return scrapedAssignments;
+        archive.pipe(output);
+        archive.directory(folderPath, rootName);
+        archive.finalize().catch(finish);
+    });
 }
 
-async function downloadAssignment(assignment) {
+/**
+ * @param {{ name: string, folderName?: string, assessmentUrl?: string }} assignment
+ * @param {vscode.CancellationToken} [token]
+ */
+async function submitAssignment(assignment, token) {
     const prefs = getPreferences();
-    if (!fs.existsSync(prefs.workspacePath)) {
-        fs.mkdirSync(prefs.workspacePath, { recursive: true });
-    }
-
-    // 1. Fetch the assessment page first to find the real download link
-    const assessmentUrl = `${AUTOLAB_URL}/courses/APCS-A-25/assessments/${assignment.name}`;
-    const pageResponse = await fetch(assessmentUrl, {
-        headers: {
-            Cookie: prefs.sessionCookie,
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
-        },
-    });
-
-    if (!pageResponse.ok) {
-        throw new Error(`Failed to fetch assessment page: ${pageResponse.status}`);
-    }
-
-    const pageBody = await pageResponse.text();
-    const $ = cheerio.load(pageBody);
-
-    let downloadLink = "";
-    $("a").each((i, el) => {
-        const text = $(el).text().trim();
-        if (text.includes("Download handout")) {
-            downloadLink = $(el).attr("href") || "";
-        }
-    });
-
-    if (!downloadLink) {
-        // Fallback to the standard pattern if scraping fails
-        downloadLink = `/courses/APCS-A-25/assessments/${assignment.name}/handout`;
-    }
-
-    const fullDownloadUrl = `${AUTOLAB_URL}${downloadLink}`;
-
-    // Note: This basic auth credential appears to be public/shared for the school's Autolab instance.
-    // If this is private, it should be moved to configuration.
-    const auth = "Basic " + Buffer.from("lhsuser:lhsuser").toString("base64");
-    const response = await fetch(fullDownloadUrl, {
-        headers: {
-            Authorization: auth,
-            Cookie: prefs.sessionCookie,
-        },
-    });
-
-    if (!response.ok) {
-        throw new Error(`Download failed with status: ${response.status}`);
-    }
-
-    const zipFilePath = path.join(prefs.workspacePath, `${assignment.name}.zip`);
-    const destDir = path.join(prefs.workspacePath, assignment.name);
-
-    await streamPipeline(response.body, fs.createWriteStream(zipFilePath));
-
-    await new Promise((resolve, reject) => {
-        fs.createReadStream(zipFilePath)
-            .pipe(unzipper.Extract({ path: destDir }))
-            .on('close', resolve)
-            .on('error', reject);
-    });
-
-    fs.unlinkSync(zipFilePath);
-
-    // Check for nested folder with same name (e.g. Lab1/Lab1)
-    const nestedDir = path.join(destDir, assignment.name);
-    if (fs.existsSync(nestedDir) && fs.statSync(nestedDir).isDirectory()) {
-        console.log(`Detected nested folder ${nestedDir}, flattening...`);
-        const files = fs.readdirSync(nestedDir);
-        for (const file of files) {
-            const srcPath = path.join(nestedDir, file);
-            const destPath = path.join(destDir, file);
-            // Move file up one level
-            fs.renameSync(srcPath, destPath);
-        }
-        // Remove the now empty nested directory
-        fs.rmdirSync(nestedDir);
-    }
-
-    updateJavaFileHeaders(destDir, prefs);
-    
-    // Open the folder in VS Code
-    // We can't easily "open" a folder in the current workspace without reloading, 
-    // but we can add it to workspace folders or just reveal it.
-    // For now, let's just reveal it in finder/explorer via command or just notify.
-    // Ideally, the user might want to add this folder to the workspace.
-    
-    return destDir;
-}
-
-async function submitAssignment(assignment) {
-    const prefs = getPreferences();
-    const folderPath = path.join(prefs.workspacePath, assignment.name);
-    const zipPath = path.join(prefs.workspacePath, `${assignment.name}.zip`);
-
+    const cookie = await getSessionCookie();
+    const folderPath = getAssignmentDirectory(prefs, assignment);
     if (!fs.existsSync(folderPath)) {
-        throw new Error(`Assignment folder not found at ${folderPath}`);
+        throw new Error(`Assignment folder does not exist: ${folderPath}`);
     }
 
     updateJavaFileHeaders(folderPath, prefs);
+    const temporaryRoot = await fs.promises.mkdtemp(path.join(prefs.workspacePath, '.autolab-submit-'));
+    const archiveName = `${getAssignmentFolderName(assignment)}.zip`;
+    const zipPath = path.join(temporaryRoot, archiveName);
+    /** @type {fs.ReadStream | undefined} */
+    let submissionStream;
 
-    const output = fs.createWriteStream(zipPath);
-    const archive = archiver('zip', { zlib: { level: 9 } });
+    try {
+        await createSubmissionArchive(
+            folderPath,
+            zipPath,
+            toPortableName(path.basename(folderPath), { maxLength: 100 }),
+            token
+        );
+        throwIfCancelled(token);
 
-    archive.pipe(output);
-    archive.directory(folderPath, assignment.name);
-    await archive.finalize();
+        const assessmentUrl = getAssessmentUrl(prefs, assignment);
+        const { $ } = await fetchText(
+            assessmentUrl,
+            { headers: getHeaders(prefs, cookie) },
+            token,
+            'Fetching the submission form'
+        );
+        const authenticityToken = $('input[name="authenticity_token"]').attr('value');
+        if (!authenticityToken) {
+            throw new Error('Autolab did not return a submission authenticity token.');
+        }
 
-    await new Promise((resolve, reject) => {
-        output.on("close", resolve);
-        output.on("error", reject);
-    });
+        const form = new FormData();
+        form.append('utf8', '✓');
+        form.append('authenticity_token', authenticityToken);
+        form.append('integrity_checkbox', '1');
+        submissionStream = fs.createReadStream(zipPath);
+        form.append('submission[file]', submissionStream, {
+            filename: archiveName,
+            knownLength: (await fs.promises.stat(zipPath)).size,
+        });
 
-    // Get authenticity token
-    const assessmentUrl = `${AUTOLAB_URL}/courses/APCS-A-25/assessments/${assignment.name}`;
-    const pageResponse = await fetch(assessmentUrl, {
-        headers: { Cookie: prefs.sessionCookie }
-    });
-    
-    if (!pageResponse.ok) throw new Error("Failed to fetch assessment page");
-    
-    const pageBody = await pageResponse.text();
-    const $ = cheerio.load(pageBody);
-    const token = $('input[name="authenticity_token"]').attr("value");
-    
-    if (!token) throw new Error("Could not find authenticity token");
-
-    const form = new FormData();
-    form.append("utf8", "✓");
-    form.append("authenticity_token", token);
-    form.append("integrity_checkbox", "1");
-    form.append("submission[file]", fs.readFileSync(zipPath), `${assignment.name}.zip`);
-
-    const submitUrl = `${AUTOLAB_URL}/courses/APCS-A-25/assessments/${assignment.name}/handin`;
-    const submitResponse = await fetch(submitUrl, {
-        method: "POST",
-        headers: {
-            Cookie: prefs.sessionCookie,
-            ...form.getHeaders(),
-        },
-        body: form,
-    });
-
-    if (!submitResponse.ok) throw new Error(`Submission failed: ${submitResponse.status}`);
-    
-    fs.unlinkSync(zipPath);
-    return true;
+        const submitUrl = `${assessmentUrl.replace(/\/$/, '')}/handin`;
+        await withFetch(submitUrl, {
+            method: 'POST',
+            headers: getHeaders(prefs, cookie, form.getHeaders()),
+            body: form,
+        }, token, async (response) => {
+            assertResponseStatus(response, 'Submitting the assignment');
+            await response.arrayBuffer();
+        });
+        return true;
+    } finally {
+        submissionStream?.destroy();
+        await removeTemporaryDirectory(temporaryRoot);
+    }
 }
 
-async function pollFeedback(assignmentName, callback) {
+/** @param {number} milliseconds @param {vscode.CancellationToken | undefined} token */
+async function delay(milliseconds, token) {
+    throwIfCancelled(token);
+    await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            cancellation?.dispose();
+            resolve();
+        }, milliseconds);
+        const cancellation = token?.onCancellationRequested(() => {
+            clearTimeout(timeout);
+            cancellation.dispose();
+            reject(new vscode.CancellationError());
+        });
+    });
+}
+
+/** @param {string} value */
+function toMarkdownCodeBlock(value) {
+    const fence = value.includes('```') ? '````' : '```';
+    return `${fence}\n${value}\n${fence}\n\n`;
+}
+
+/**
+ * @param {string | { name: string, assessmentUrl?: string }} assignment
+ * @param {(message: string) => void} [callback]
+ * @param {vscode.CancellationToken} [token]
+ */
+async function pollFeedback(assignment, callback, token) {
     const prefs = getPreferences();
-    let attempts = 0;
-    
-    while (attempts < 20) {
-        try {
-            const assessmentUrl = `${AUTOLAB_URL}/courses/APCS-A-25/assessments/${assignmentName}`;
-            const resp = await fetch(assessmentUrl, {
-                headers: { Cookie: prefs.sessionCookie, Accept: "text/html" },
-            });
-            const body = await resp.text();
-            const $ = cheerio.load(body);
-            const foundSubmissionLink = $("tbody tr").first().find('td a[href*="viewFeedback"]').attr("href");
+    const cookie = await getSessionCookie();
+    const assignmentObject = typeof assignment === 'string' ? { name: assignment } : assignment;
+    const assessmentUrl = getAssessmentUrl(prefs, assignmentObject);
 
-            if (foundSubmissionLink) {
-                const feedbackUrl = `${AUTOLAB_URL}${foundSubmissionLink}`;
-                const viewResp = await fetch(feedbackUrl, {
-                    headers: { Cookie: prefs.sessionCookie, Accept: "text/html" },
-                });
-                const viewBody = await viewResp.text();
-                const $v = cheerio.load(viewBody);
+    for (let attempt = 1; attempt <= 20; attempt++) {
+        const { $ } = await fetchText(
+            assessmentUrl,
+            { headers: getHeaders(prefs, cookie) },
+            token,
+            'Fetching submission status'
+        );
+        const feedbackHref = $('a[href*="viewFeedback"]').first().attr('href');
 
-                const isInProgress = $v(".feedback-status__inprogress").length > 0 || $v(".feedback-status__queued").length > 0;
-                const hasResultTable = $v(".result-summary table").length > 0;
-                const isCompleted = $v(".feedback-status__completed").length > 0;
+        if (feedbackHref) {
+            const feedbackUrl = resolveAutolabUrl(feedbackHref, AUTOLAB_URL);
+            const { $: $feedback } = await fetchText(
+                feedbackUrl,
+                { headers: getHeaders(prefs, cookie) },
+                token,
+                'Fetching feedback'
+            );
+            const isInProgress = $feedback('.feedback-status__inprogress, .feedback-status__queued').length > 0;
+            const hasResults = $feedback('.result-summary table').length > 0;
+            const isComplete = $feedback('.feedback-status__completed').length > 0;
 
-                if (!isInProgress && (isCompleted || hasResultTable)) {
-                    let md = `# ${assignmentName} - Feedback\n\n`;
-                    const pre = $v("pre").first().text();
-                    if (pre && pre.trim().length > 0) {
-                        md += "```\n" + pre + "\n```\n\n";
-                    }
-
-                    const rows = $v(".result-summary table tbody tr");
-                    if (rows.length > 0) {
-                        md += "## Results\n";
-                        rows.each((i, r) => {
-                            const tds = $v(r).find("td");
-                            const k = $v(tds[0]).text().trim().replace(/:$/, "");
-                            const v = $v(tds[1]).text().trim();
-                            md += "- **" + k + "**: " + v + "\n";
-                        });
-                        md += "\n";
-                    }
-
-                    if (md.trim() === `# ${assignmentName} - Feedback`) {
-                        md += "\n_No detailed feedback found._\n";
-                    }
-                    
-                    return md;
+            if (!isInProgress && (isComplete || hasResults)) {
+                let markdown = `# ${assignmentObject.name} - Feedback\n\n`;
+                const output = $feedback('pre').first().text().trim();
+                if (output) {
+                    markdown += toMarkdownCodeBlock(output);
                 }
+
+                const rows = $feedback('.result-summary table tbody tr');
+                if (rows.length > 0) {
+                    markdown += '## Results\n\n';
+                    rows.each((index, row) => {
+                        const cells = $feedback(row).find('td');
+                        if (cells.length >= 2) {
+                            const key = $feedback(cells[0]).text().trim().replace(/:$/, '');
+                            const value = $feedback(cells[1]).text().trim();
+                            markdown += `- **${key}**: ${value}\n`;
+                        }
+                    });
+                }
+
+                if (!output && rows.length === 0) {
+                    markdown += '_No detailed feedback was found._\n';
+                }
+                return markdown;
             }
-        } catch (e) {
-            console.error("Polling error", e);
         }
-        
-        attempts++;
-        if (callback) callback(`Waiting for feedback... Attempt ${attempts}/20`);
-        await new Promise((r) => setTimeout(r, 3000));
+
+        callback?.(`Waiting for feedback, attempt ${attempt}/20`);
+        if (attempt < 20) {
+            await delay(3_000, token);
+        }
     }
-    throw new Error("Grading timed out");
+    throw new Error('Autolab grading did not finish within one minute.');
 }
 
 module.exports = {
-    fetchAssignments,
+    clearSessionCookie,
     downloadAssignment,
+    fetchAssignments,
+    getAssignmentDirectory,
+    getPreferences,
+    initialize,
+    pollFeedback,
+    setSessionCookie,
     submitAssignment,
     updateJavaFileHeaders,
-    pollFeedback,
-    getPreferences
 };

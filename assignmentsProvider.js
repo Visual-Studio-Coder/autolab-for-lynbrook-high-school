@@ -1,16 +1,28 @@
 const vscode = require('vscode');
 const autolab = require('./autolab');
-const path = require('path');
+const { getErrorMessage } = require('./autolabUtils');
 
 class AssignmentsProvider {
     constructor() {
         this._onDidChangeTreeData = new vscode.EventEmitter();
         this.onDidChangeTreeData = this._onDidChangeTreeData.event;
         this.assignments = [];
+        this._generation = 0;
+        this._loadPromise = undefined;
+        this._cancellation = undefined;
     }
 
     refresh() {
-        this._onDidChangeTreeData.fire();
+        this._generation++;
+        this._cancellation?.cancel();
+        this._loadPromise = undefined;
+        this._onDidChangeTreeData.fire(undefined);
+    }
+
+    dispose() {
+        this._cancellation?.cancel();
+        this._cancellation?.dispose();
+        this._onDidChangeTreeData.dispose();
     }
 
     getTreeItem(element) {
@@ -25,15 +37,40 @@ class AssignmentsProvider {
             return []; // No children for assignments (flat list)
         }
 
+        if (!this._loadPromise) {
+            const generation = this._generation;
+            const cancellation = new vscode.CancellationTokenSource();
+            this._cancellation = cancellation;
+            this._loadPromise = autolab.fetchAssignments(cancellation.token)
+                .then((assignments) => {
+                    if (generation === this._generation) {
+                        this.assignments = assignments;
+                    }
+                    return assignments;
+                })
+                .finally(() => {
+                    cancellation.dispose();
+                    if (generation === this._generation) {
+                        this._loadPromise = undefined;
+                        this._cancellation = undefined;
+                    }
+                });
+        }
+
         try {
-            this.assignments = await autolab.fetchAssignments();
-            if (this.assignments.length === 0) {
-                return [new vscode.TreeItem("No assignments found", vscode.TreeItemCollapsibleState.None)];
+            const assignments = await this._loadPromise;
+            if (assignments.length === 0) {
+                return [new vscode.TreeItem('No assignments found', vscode.TreeItemCollapsibleState.None)];
             }
-            return this.assignments;
+            return assignments;
         } catch (error) {
-            vscode.window.showErrorMessage(`Failed to fetch assignments: ${error.message}`);
-            return [];
+            if (error instanceof vscode.CancellationError) {
+                return [];
+            }
+            const item = new vscode.TreeItem('Could not load assignments', vscode.TreeItemCollapsibleState.None);
+            item.description = getErrorMessage(error);
+            item.tooltip = getErrorMessage(error);
+            return [item];
         }
     }
 }
@@ -45,8 +82,8 @@ class AssignmentTreeItem extends vscode.TreeItem {
         
         // Shorten date for better visibility
         // e.g. "Wed, Dec 10 at 11:59pm" -> "Dec 10"
-        let shortDate = assignment.dueDate;
-        const dateMatch = assignment.dueDate.match(/([A-Z][a-z]{2})\s+(\d+)/);
+        let shortDate = assignment.dueDate || 'No due date';
+        const dateMatch = shortDate.match(/([A-Z][a-z]{2})\s+(\d+)/);
         if (dateMatch) {
             shortDate = `${dateMatch[1]} ${dateMatch[2]}`;
         }

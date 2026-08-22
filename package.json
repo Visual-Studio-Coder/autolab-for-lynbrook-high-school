@@ -2,7 +2,7 @@
   "name": "autolab-for-lynbrook-high-school",
   "displayName": "Autolab for Lynbrook High School",
   "description": "This autolab extension, made for Lynbrook High School, allows for students to connect their Autolab accounts to this Visual Studio Code extension and download and submit assignments and view the scores/feedback without the need to open autolab in the browser, saving a significant amount of time and boosting productivity.",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "icon": "resources/extension-icon.png",
   "publisher": "Visual-Studio-Coder",
   "repository": {
@@ -10,7 +10,7 @@
     "url": "https://github.com/Visual-Studio-Coder/autolab-for-lynbrook-high-school"
   },
   "engines": {
-    "vscode": "^1.105.0"
+    "vscode": "^1.85.0"
   },
   "categories": [
     "Education",
@@ -32,7 +32,18 @@
         "autolab.sessionCookie": {
           "type": "string",
           "default": "",
-          "description": "Your Autolab session cookie (e.g., _autolab_session=...)."
+          "description": "Legacy plain-text session cookie setting.",
+          "markdownDeprecationMessage": "Use the **Autolab: Set Session Cookie** command to save this value in VS Code secure storage."
+        },
+        "autolab.courseName": {
+          "type": "string",
+          "default": "APCS-A-25",
+          "description": "Course name from the Autolab course URL."
+        },
+        "autolab.userAgent": {
+          "type": "string",
+          "default": "",
+          "description": "Optional browser User-Agent value for Cloudflare compatibility. Leave empty to use the current VS Code platform."
         },
         "autolab.authorName": {
           "type": "string",
@@ -118,6 +129,16 @@
         "command": "autolab.setDownloadFolder",
         "title": "Set Download Folder",
         "category": "Autolab"
+      },
+      {
+        "command": "autolab.setSessionCookie",
+        "title": "Set Session Cookie",
+        "category": "Autolab"
+      },
+      {
+        "command": "autolab.clearSessionCookie",
+        "title": "Clear Session Cookie",
+        "category": "Autolab"
       }
     ],
     "menus": {
@@ -171,22 +192,37 @@
   },
   "scripts": {
     "lint": "eslint .",
+    "typecheck": "tsc -p jsconfig.json --noEmit",
+    "test:unit": "node --test test/unit.node.js",
+    "check": "npm run lint && npm run typecheck && npm run test:unit",
+    "package:vsix": "vsce package",
     "pretest": "npm run lint",
     "test": "vscode-test"
   },
   "devDependencies": {
+    "@types/archiver": "^7.0.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
-    "@types/vscode": "^1.105.0",
-    "@vscode/test-cli": "^0.0.11",
-    "@vscode/test-electron": "^2.5.2",
-    "eslint": "^9.36.0"
+    "@types/node-fetch": "^2.6.13",
+    "@types/unzipper": "^0.10.11",
+    "@types/vscode": "1.85.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^3.9.2",
+    "eslint": "^9.36.0",
+    "typescript": "^5.9.3"
   },
   "dependencies": {
     "archiver": "^7.0.1",
     "cheerio": "^1.1.2",
-    "form-data": "^4.0.5",
+    "form-data": "^4.0.6",
     "node-fetch": "^2.7.0",
     "unzipper": "^0.12.3"
+  },
+  "overrides": {
+    "mocha": {
+      "diff": "^8.0.3",
+      "serialize-javascript": "^7.1.0"
+    }
   }
 }

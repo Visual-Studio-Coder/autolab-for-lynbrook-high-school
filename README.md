@@ -14,16 +14,17 @@ This VS Code extension allows Lynbrook High School students to manage their APCS
 ## Setup
 
 1.  Install the extension.
-2.  Open VS Code Settings (`Cmd+,`) and search for **Autolab**.
-3.  **Session Cookie**: You need to get your session cookie from your browser.
+2.  Open the Command Palette with `Ctrl+Shift+P` on Windows or `Cmd+Shift+P` on macOS.
+3.  Run **Autolab: Set Session Cookie**. VS Code saves the cookie in secure storage.
     *   Log in to [Autolab](https://cs.lhs.fuhsd.org).
     *   Open Developer Tools (F12 or Right Click -> Inspect).
     *   Go to the **Application** tab (Chrome) or **Storage** tab (Firefox).
     *   Expand **Cookies** and select `https://cs.lhs.fuhsd.org`.
-    *   Copy the value of `_autolab_session`.
-    *   Paste it into the **Autolab: Session Cookie** setting in VS Code.
+    *   Copy the value of `_autolab3_session`. Some server versions use `_autolab_session`.
+    *   Paste the value into the command input. You can also paste the full Cookie header.
 4.  **Workspace Path**: Set the folder where you want your assignments to be downloaded. You can type the path manually or click the **Select Folder...** link in the settings description.
-5.  **Personal Info**: Set your **Author Name** and **Period** for the Java file header updates.
+5.  **Course Name**: The default is `APCS-A-25`. Change this setting when the course URL changes.
+6.  **Personal Info**: Set your **Author Name**, **Period**, and **Collaborators** for Java file header updates.
 
 ## Usage
 
@@ -39,20 +40,23 @@ This VS Code extension allows Lynbrook High School students to manage their APCS
 
 ## Extension Settings
 
-*   `autolab.sessionCookie`: Your Autolab session cookie.
 *   `autolab.workspacePath`: Directory to save assignments.
+*   `autolab.courseName`: Course name from the Autolab URL.
 *   `autolab.authorName`: Name to use in Java comments.
 *   `autolab.period`: Class period to use in Java comments.
+*   `autolab.collaborators`: Collaborators to use in Java comments.
+*   `autolab.userAgent`: Optional browser User-Agent value. Use this only if Cloudflare rejects the default value.
 
 ## Known Issues
 
-*   If your session cookie expires, you will need to update it in settings.
+*   The extension reads the current Autolab HTML. A server page change can require a parser update.
+*   If the session cookie expires, run **Autolab: Set Session Cookie** again.
 
 ## Release Notes
 
-### 0.0.7
+### 0.0.8
 
-Improved download reliability (dynamic link scraping), added automatic folder flattening, and enhanced Java header updates.
+Added portable Windows paths, safe ZIP extraction, reliable submission archives, request cancellation and timeouts, secure cookie storage, configurable course names, and real unit tests.
 
 ### 0.0.6
 
