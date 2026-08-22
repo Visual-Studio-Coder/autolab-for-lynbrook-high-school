@@ -3,7 +3,6 @@ const fetch = require('node-fetch');
 const cheerio = require('cheerio');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const { pipeline, Transform } = require('stream');
 const { promisify } = require('util');
 const unzipper = require('unzipper');
@@ -16,6 +15,7 @@ const {
     getPortableArchiveSegments,
     normalizeSessionCookie,
     resolveAutolabUrl,
+    resolveWorkspacePath,
     toPortableName,
 } = require('./autolabUtils');
 
@@ -49,10 +49,9 @@ function getDefaultUserAgent() {
 
 function getPreferences() {
     const config = vscode.workspace.getConfiguration('autolab');
-    let workspacePath = String(config.get('workspacePath') || '~/Documents/Autolab').trim();
-    if (/^~(?:[\\/]|$)/.test(workspacePath)) {
-        workspacePath = path.join(os.homedir(), workspacePath.slice(1).replace(/^[\\/]/, ''));
-    }
+    const workspacePath = resolveWorkspacePath(
+        config.get('workspacePath') || '~/Documents/Autolab'
+    );
 
     const courseName = String(config.get('courseName') || 'APCS-A-25').trim();
     if (!courseName || /[\\/]/.test(courseName)) {
@@ -60,7 +59,7 @@ function getPreferences() {
     }
 
     return {
-        workspacePath: path.resolve(workspacePath),
+        workspacePath,
         courseName,
         authorName: String(config.get('authorName') || '').trim(),
         period: String(config.get('period') || '').trim(),

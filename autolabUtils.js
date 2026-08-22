@@ -1,4 +1,6 @@
 const crypto = require('crypto');
+const os = require('os');
+const path = require('path');
 
 const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 const INVALID_WINDOWS_CHARACTERS = /[<>:"/\\|?*\u0000-\u001f]/g;
@@ -77,6 +79,42 @@ function normalizeSessionCookie(value) {
 }
 
 /**
+ * Resolve the configured download folder without treating a Windows drive root
+ * such as `G:` as a drive-relative path.
+ *
+ * @param {unknown} value
+ * @param {{ platform?: NodeJS.Platform, homeDirectory?: string, currentDirectory?: string }} [options]
+ */
+function resolveWorkspacePath(value, options = {}) {
+    const platform = options.platform ?? process.platform;
+    const pathApi = platform === 'win32' ? path.win32 : path.posix;
+    const homeDirectory = options.homeDirectory ?? os.homedir();
+    const currentDirectory = options.currentDirectory ?? process.cwd();
+    let workspacePath = String(value || '').trim();
+
+    if (!workspacePath) {
+        throw new Error('Autolab download folder is empty.');
+    }
+
+    if (/^~(?:[\\/]|$)/.test(workspacePath)) {
+        workspacePath = pathApi.join(
+            homeDirectory,
+            workspacePath.slice(1).replace(/^[\\/]/, '')
+        );
+    }
+
+    if (platform === 'win32') {
+        if (/^[A-Za-z]:$/.test(workspacePath)) {
+            workspacePath += '\\';
+        } else if (/^[A-Za-z]:[^\\/]/.test(workspacePath)) {
+            throw new Error('Use an absolute Windows path such as G:\\Autolab, not G:Autolab.');
+        }
+    }
+
+    return pathApi.resolve(currentDirectory, workspacePath);
+}
+
+/**
  * Resolve a scraped URL. Do not let an authenticated request leave the server.
  *
  * @param {string} candidate
@@ -136,5 +174,6 @@ module.exports = {
     getPortableArchiveSegments,
     normalizeSessionCookie,
     resolveAutolabUrl,
+    resolveWorkspacePath,
     toPortableName,
 };

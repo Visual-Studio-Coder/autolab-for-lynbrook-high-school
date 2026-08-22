@@ -5,6 +5,7 @@ const {
     getPortableArchiveSegments,
     normalizeSessionCookie,
     resolveAutolabUrl,
+    resolveWorkspacePath,
     toPortableName,
 } = require('../autolabUtils');
 
@@ -43,6 +44,20 @@ test('session cookie accepts a raw value or a full Cookie header', () => {
         'browser.timezone=America/Los_Angeles; _autolab3_session=abc'
     );
     assert.throws(() => normalizeSessionCookie('abc\r\nInjected: value'), /control character/);
+});
+
+test('Windows drive roots resolve to absolute root paths', () => {
+    /** @type {{ platform: NodeJS.Platform, homeDirectory: string, currentDirectory: string }} */
+    const options = {
+        platform: 'win32',
+        homeDirectory: 'C:\\Users\\Student',
+        currentDirectory: 'C:\\Users\\Student\\project',
+    };
+    assert.equal(resolveWorkspacePath('G:', options), 'G:\\');
+    assert.equal(resolveWorkspacePath('G:\\', options), 'G:\\');
+    assert.equal(resolveWorkspacePath('G:/', options), 'G:\\');
+    assert.equal(resolveWorkspacePath('~/Autolab', options), 'C:\\Users\\Student\\Autolab');
+    assert.throws(() => resolveWorkspacePath('G:Autolab', options), /absolute Windows path/);
 });
 
 test('authenticated URLs stay on the Autolab server', () => {

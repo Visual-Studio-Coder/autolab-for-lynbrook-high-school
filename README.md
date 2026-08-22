@@ -54,9 +54,17 @@ This VS Code extension allows Lynbrook High School students to manage their APCS
 
 ## Release Notes
 
+### 0.0.10
+
+Fixed Windows drive-root download folders such as `G:` so they resolve to `G:\` instead of causing an `EINVAL` error.
+
+### 0.0.9
+
+Added portable Windows paths, safe ZIP extraction, reliable submission archives, request cancellation and timeouts, secure cookie storage, configurable course names, safer uploads, and automated tests.
+
 ### 0.0.8
 
-Added portable Windows paths, safe ZIP extraction, reliable submission archives, request cancellation and timeouts, secure cookie storage, configurable course names, and real unit tests.
+Improved dynamic download link detection, flattened duplicate nested assignment folders, and improved Java header updates.
 
 ### 0.0.6
 
